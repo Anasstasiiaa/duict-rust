@@ -5,13 +5,20 @@ use std::path::{Path, PathBuf};
 
 use image::imageops::FilterType;
 use image::DynamicImage;
-//cargo run -- --files images.txt --resize 800x600
+
+mod fs_uploader;
+mod s3_uploader;
+mod uploader;
+
+use fs_uploader::FsUploader;
+use s3_uploader::S3Uploader;
+use uploader::Uploader;
+
 /// Configuration parsed from CLI arguments and environment.
 struct Config {
     list_path: PathBuf,
     width: u32,
     height: u32,
-    output_dir: PathBuf,
 }
 
 fn main() {
@@ -25,6 +32,8 @@ fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().collect();
     let config = parse_args(&args)?;
 
+    let uploader = get_uploader();
+
     let file = File::open(&config.list_path)
         .map_err(|e| format!("Не вдається відкрити файл зі списком: {e}"))?;
     let reader = BufReader::new(file);
@@ -36,7 +45,7 @@ fn run() -> Result<(), String> {
             continue;
         }
 
-        if let Err(err) = process_entry(trimmed, &config, idx) {
+        if let Err(err) = process_entry(trimmed, &config, idx, uploader.as_ref()) {
             eprintln!("Помилка для запису #{idx} (`{trimmed}`): {err}");
         }
     }
@@ -44,8 +53,19 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
+fn get_uploader() -> Box<dyn Uploader> {
+    match env::var("MYME_UPLOADER")
+        .unwrap_or("fs".to_string())
+        .as_str()
+    {
+        "s3" => Box::new(S3Uploader {
+            bucket: env::var("S3_BUCKET").expect("S3_BUCKET not set"),
+        }),
+        _ => Box::new(FsUploader),
+    }
+}
+
 fn parse_args(args: &[String]) -> Result<Config, String> {
-    // args[0] is the program name.
     let mut list_path: Option<PathBuf> = None;
     let mut resize: Option<(u32, u32)> = None;
 
@@ -73,48 +93,35 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         i += 1;
     }
 
-    let list_path =
-        list_path.ok_or_else(|| "Не вказано файл зі списком (прапор --files)".to_string())?;
+    let list_path = list_path.ok_or_else(|| "Не вказано файл зі списком (--files)".to_string())?;
     let (width, height) =
-        resize.ok_or_else(|| "Не вказано розмір (прапор --resize widthxheight)".to_string())?;
-
-    let output_dir_str = env::var("MYME_FILES_PATH")
-        .map_err(|_| "Змінна середовища MYME_FILES_PATH не встановлена".to_string())?;
-    let output_dir = PathBuf::from(output_dir_str);
-
-    if !output_dir.exists() {
-        return Err(format!(
-            "Каталог, вказаний у MYME_FILES_PATH, не існує: {}",
-            output_dir.display()
-        ));
-    }
+        resize.ok_or_else(|| "Не вказано розмір (--resize widthxheight)".to_string())?;
 
     Ok(Config {
         list_path,
         width,
         height,
-        output_dir,
     })
 }
 
 fn parse_resize(s: &str) -> Result<(u32, u32), String> {
     let parts: Vec<&str> = s.split('x').collect();
     if parts.len() != 2 {
-        return Err("Невірний формат для --resize, очікується widthxheight".into());
+        return Err("Формат --resize: widthxheight".into());
     }
-    let width: u32 = parts[0]
-        .parse()
-        .map_err(|_| "Ширина повинна бути додатнім числом".to_string())?;
-    let height: u32 = parts[1]
-        .parse()
-        .map_err(|_| "Висота повинна бути додатнім числом".to_string())?;
-    if width == 0 || height == 0 {
-        return Err("Ширина та висота повинні бути більше нуля".into());
-    }
+
+    let width: u32 = parts[0].parse().map_err(|_| "width не число")?;
+    let height: u32 = parts[1].parse().map_err(|_| "height не число")?;
+
     Ok((width, height))
 }
 
-fn process_entry(entry: &str, config: &Config, index: usize) -> Result<(), String> {
+fn process_entry(
+    entry: &str,
+    config: &Config,
+    index: usize,
+    uploader: &dyn Uploader,
+) -> Result<(), String> {
     let img = if is_url(entry) {
         load_image_from_url(entry)?
     } else {
@@ -122,22 +129,21 @@ fn process_entry(entry: &str, config: &Config, index: usize) -> Result<(), Strin
     };
 
     let resized = resize_image(img, config.width, config.height);
-    let output_path = build_output_path(
-        entry,
-        &config.output_dir,
-        config.width,
-        config.height,
-        index,
-    );
 
-    resized.save(&output_path).map_err(|e| {
-        format!(
-            "Не вдалося зберегти зображення в {}: {e}",
-            output_path.display()
+    let filename = build_filename(entry, config.width, config.height, index);
+
+    let mut buffer = Vec::new();
+    resized
+        .write_to(
+            &mut std::io::Cursor::new(&mut buffer),
+            image::ImageFormat::Png,
         )
-    })?;
+        .map_err(|e| format!("Помилка кодування: {e}"))?;
 
-    println!("Збережено: {}", output_path.display());
+    uploader.upload(&filename, buffer);
+
+    println!("Оброблено: {}", filename);
+
     Ok(())
 }
 
@@ -146,62 +152,32 @@ fn is_url(s: &str) -> bool {
 }
 
 fn load_image_from_url(url: &str) -> Result<DynamicImage, String> {
-    let response = reqwest::blocking::get(url).map_err(|e| format!("Помилка HTTP-запиту: {e}"))?;
+    let response = reqwest::blocking::get(url).map_err(|e| format!("HTTP помилка: {e}"))?;
 
-    if !response.status().is_success() {
-        return Err(format!("Сервер повернув статус: {}", response.status()));
-    }
+    let bytes = response.bytes().map_err(|e| format!("Bytes error: {e}"))?;
 
-    let bytes = response
-        .bytes()
-        .map_err(|e| format!("Не вдалося прочитати тіло відповіді: {e}"))?;
-
-    image::load_from_memory(&bytes)
-        .map_err(|e| format!("Не вдалося завантажити зображення з памʼяті: {e}"))
+    image::load_from_memory(&bytes).map_err(|e| format!("Image decode error: {e}"))
 }
 
 fn load_image_from_path(path: &str) -> Result<DynamicImage, String> {
-    let path_obj = Path::new(path);
-
-    image::open(path_obj).map_err(|e| {
-        format!(
-            "Не вдалося відкрити зображення за шляхом {}: {e}",
-            path_obj.display()
-        )
-    })
+    image::open(path).map_err(|e| format!("File error: {e}"))
 }
 
 fn resize_image(img: DynamicImage, width: u32, height: u32) -> DynamicImage {
     img.resize_exact(width, height, FilterType::Lanczos3)
 }
 
-fn build_output_path(
-    original: &str,
-    output_dir: &Path,
-    width: u32,
-    height: u32,
-    index: usize,
-) -> PathBuf {
-    let base_name = if is_url(original) {
-        // спробувати взяти імʼя файлу з URL
-        original
-            .rsplit('/')
-            .next()
-            .filter(|s| !s.is_empty())
-            .unwrap_or("image")
+fn build_filename(original: &str, width: u32, height: u32, index: usize) -> String {
+    let base = if is_url(original) {
+        original.split('/').last().unwrap_or("image")
     } else {
         Path::new(original)
             .file_name()
-            .and_then(|n| n.to_str())
+            .and_then(|s| s.to_str())
             .unwrap_or("image")
     };
 
-    // Забрати розширення, якщо є
-    let base_without_ext = base_name
-        .rsplit_once('.')
-        .map(|(name, _)| name)
-        .unwrap_or(base_name);
+    let name = base.split('.').next().unwrap_or("image");
 
-    let file_name = format!("{base_without_ext}_{width}x{height}_{index}.png");
-    output_dir.join(file_name)
+    format!("{name}_{width}x{height}_{index}.png")
 }
