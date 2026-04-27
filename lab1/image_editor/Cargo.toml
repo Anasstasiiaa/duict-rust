@@ -4,8 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-reqwest = { version = "0.12", default-features = false, features = [
-    "blocking",
-    "rustls-tls",
-] }
-image = "0.25"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json"] }
+rayon = "1.10"
+image = "0.25.10"
