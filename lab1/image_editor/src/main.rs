@@ -78,7 +78,6 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     let (width, height) =
         resize.ok_or_else(|| "Не вказано розмір (--resize widthxheight)".to_string())?;
 
-    // FIX ISSUE #1 — нормальна обробка env без panic
     let output_dir_str =
         env::var("MYME_FILES_PATH").map_err(|_| "MYME_FILES_PATH не встановлено".to_string())?;
 
@@ -97,6 +96,10 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
 }
 
 fn parse_resize(s: &str) -> Result<(u32, u32), String> {
+    if !s.contains('x') {
+        return Err("Невірний формат --resize (очікується widthxheight)".into());
+    }
+
     let parts: Vec<&str> = s.split('x').collect();
     if parts.len() != 2 {
         return Err("Формат --resize: widthxheight".into());
@@ -175,7 +178,6 @@ fn build_output_path(
 
     let name = base.split('.').next().unwrap_or("image");
 
-    // FIX ISSUE #2 — унікальність через timestamp
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
