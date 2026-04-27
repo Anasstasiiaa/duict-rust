@@ -1,11 +1,16 @@
-# Lab 7 - Async + CPU separation
+## Performance comparison
 
-## Changes
+Tested different Tokio runtime configurations:
 
-- IO tasks moved to async (tokio + reqwest)
-- CPU tasks moved to rayon
-- no blocking main thread
+1 thread:
+Time: 157 ms
 
-## Result
+2 threads:
+Time: 158 ms
 
-Improved performance and responsiveness
+CPU cores (4 threads):
+Time: 150 ms
+
+Conclusion:
+Best performance achieved when number of threads equals CPU cores.
+Too many threads may reduce performance due to context switching overhead.

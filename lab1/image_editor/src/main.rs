@@ -1,11 +1,13 @@
 use std::env;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use image::imageops::FilterType;
 use image::DynamicImage;
 
 use rayon::prelude::*;
 use tokio::fs;
+use tokio::runtime::Builder;
 
 /// Config
 struct Config {
@@ -15,27 +17,39 @@ struct Config {
     output_dir: PathBuf,
 }
 
-#[tokio::main]
-async fn main() {
-    if let Err(e) = run().await {
-        eprintln!("Error: {e}");
-        std::process::exit(1);
-    }
+fn main() {
+    // ⏱ benchmark start
+    let start = Instant::now();
+
+    // ⚙️ MANUAL TOKIO RUNTIME CONFIGURATION (ЛР8 requirement)
+    let runtime = Builder::new_multi_thread()
+        .worker_threads(num_cpus::get()) // оптимально = CPU cores
+        .max_blocking_threads(8)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        if let Err(e) = run().await {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+    });
+
+    // ⏱ benchmark end
+    println!("Time: {:?}", start.elapsed());
 }
 
 async fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().collect();
     let config = parse_args(&args)?;
 
-    // 📥 ASYNC FILE READ (IO-bound)
+    // 📥 ASYNC IO (file read)
     let content = fs::read_to_string(&config.list_path)
         .await
         .map_err(|e| format!("Cannot read file: {e}"))?;
 
-    let entries: Vec<String> = content
-        .lines()
-        .map(|s| s.to_string())
-        .collect();
+    let entries: Vec<String> = content.lines().map(|s| s.to_string()).collect();
 
     // 🧠 CPU-bound parallel processing
     entries.par_iter().enumerate().for_each(|(idx, entry)| {
@@ -71,15 +85,17 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         i += 1;
     }
 
-    let list_path =
-        list_path.ok_or_else(|| "Missing --files".to_string())?;
-    let (width, height) =
-        resize.ok_or_else(|| "Missing --resize".to_string())?;
+    let list_path = list_path.ok_or_else(|| "Missing --files".to_string())?;
+    let (width, height) = resize.ok_or_else(|| "Missing --resize".to_string())?;
 
     let output_dir = PathBuf::from(
         env::var("MYME_FILES_PATH")
             .map_err(|_| "MYME_FILES_PATH not set".to_string())?,
     );
+
+    if !output_dir.exists() {
+        return Err("Output dir does not exist".to_string());
+    }
 
     Ok(Config {
         list_path,
@@ -91,10 +107,11 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
 
 fn parse_resize(s: &str) -> Result<(u32, u32), String> {
     if !s.contains('x') {
-        return Err("Invalid format, expected widthxheight".into());
+        return Err("Invalid format (expected widthxheight)".into());
     }
 
     let parts: Vec<&str> = s.split('x').collect();
+
     let width: u32 = parts[0].parse().map_err(|_| "bad width")?;
     let height: u32 = parts[1].parse().map_err(|_| "bad height")?;
 
@@ -106,7 +123,8 @@ fn process_entry(entry: &str, config: &Config, index: usize) -> Result<(), Strin
 
     let resized = resize_image(img, config.width, config.height);
 
-    let output_path = build_output_path(entry, &config.output_dir, config.width, config.height, index);
+    let output_path =
+        build_output_path(entry, &config.output_dir, config.width, config.height, index);
 
     resized
         .save(&output_path)
@@ -116,7 +134,6 @@ fn process_entry(entry: &str, config: &Config, index: usize) -> Result<(), Strin
     Ok(())
 }
 
-// 📁 simplified (NO blocking URL here for ЛР7 focus)
 fn load_image_from_path(path: &str) -> Result<DynamicImage, String> {
     image::open(path).map_err(|e| format!("file error: {e}"))
 }
