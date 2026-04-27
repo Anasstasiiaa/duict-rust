@@ -2,10 +2,11 @@ use std::env;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use image::imageops::FilterType;
 use image::DynamicImage;
-//cargo run -- --files images.txt --resize 800x600
+
 /// Configuration parsed from CLI arguments and environment.
 struct Config {
     list_path: PathBuf,
@@ -27,11 +28,13 @@ fn run() -> Result<(), String> {
 
     let file = File::open(&config.list_path)
         .map_err(|e| format!("Не вдається відкрити файл зі списком: {e}"))?;
+
     let reader = BufReader::new(file);
 
     for (idx, line) in reader.lines().enumerate() {
         let line = line.map_err(|e| format!("Помилка читання рядка {idx}: {e}"))?;
         let trimmed = line.trim();
+
         if trimmed.is_empty() {
             continue;
         }
@@ -45,7 +48,6 @@ fn run() -> Result<(), String> {
 }
 
 fn parse_args(args: &[String]) -> Result<Config, String> {
-    // args[0] is the program name.
     let mut list_path: Option<PathBuf> = None;
     let mut resize: Option<(u32, u32)> = None;
 
@@ -66,27 +68,24 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
                 }
                 resize = Some(parse_resize(&args[i])?);
             }
-            other => {
-                return Err(format!("Невідомий аргумент: {other}"));
-            }
+            other => return Err(format!("Невідомий аргумент: {other}")),
         }
         i += 1;
     }
 
-    let list_path =
-        list_path.ok_or_else(|| "Не вказано файл зі списком (прапор --files)".to_string())?;
-    let (width, height) =
-        resize.ok_or_else(|| "Не вказано розмір (прапор --resize widthxheight)".to_string())?;
+    let list_path = list_path.ok_or_else(|| "Не вказано файл зі списком (--files)".to_string())?;
 
-    let output_dir_str = env::var("MYME_FILES_PATH")
-        .map_err(|_| "Змінна середовища MYME_FILES_PATH не встановлена".to_string())?;
+    let (width, height) =
+        resize.ok_or_else(|| "Не вказано розмір (--resize widthxheight)".to_string())?;
+
+    // FIX ISSUE #1 — нормальна обробка env без panic
+    let output_dir_str =
+        env::var("MYME_FILES_PATH").map_err(|_| "MYME_FILES_PATH не встановлено".to_string())?;
+
     let output_dir = PathBuf::from(output_dir_str);
 
     if !output_dir.exists() {
-        return Err(format!(
-            "Каталог, вказаний у MYME_FILES_PATH, не існує: {}",
-            output_dir.display()
-        ));
+        return Err(format!("Каталог не існує: {}", output_dir.display()));
     }
 
     Ok(Config {
@@ -100,17 +99,16 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
 fn parse_resize(s: &str) -> Result<(u32, u32), String> {
     let parts: Vec<&str> = s.split('x').collect();
     if parts.len() != 2 {
-        return Err("Невірний формат для --resize, очікується widthxheight".into());
+        return Err("Формат --resize: widthxheight".into());
     }
-    let width: u32 = parts[0]
-        .parse()
-        .map_err(|_| "Ширина повинна бути додатнім числом".to_string())?;
-    let height: u32 = parts[1]
-        .parse()
-        .map_err(|_| "Висота повинна бути додатнім числом".to_string())?;
+
+    let width: u32 = parts[0].parse().map_err(|_| "width не число")?;
+    let height: u32 = parts[1].parse().map_err(|_| "height не число")?;
+
     if width == 0 || height == 0 {
-        return Err("Ширина та висота повинні бути більше нуля".into());
+        return Err("Розмір має бути > 0".into());
     }
+
     Ok((width, height))
 }
 
@@ -122,6 +120,7 @@ fn process_entry(entry: &str, config: &Config, index: usize) -> Result<(), Strin
     };
 
     let resized = resize_image(img, config.width, config.height);
+
     let output_path = build_output_path(
         entry,
         &config.output_dir,
@@ -130,12 +129,9 @@ fn process_entry(entry: &str, config: &Config, index: usize) -> Result<(), Strin
         index,
     );
 
-    resized.save(&output_path).map_err(|e| {
-        format!(
-            "Не вдалося зберегти зображення в {}: {e}",
-            output_path.display()
-        )
-    })?;
+    resized
+        .save(&output_path)
+        .map_err(|e| format!("Помилка збереження: {e}"))?;
 
     println!("Збережено: {}", output_path.display());
     Ok(())
@@ -146,29 +142,15 @@ fn is_url(s: &str) -> bool {
 }
 
 fn load_image_from_url(url: &str) -> Result<DynamicImage, String> {
-    let response = reqwest::blocking::get(url).map_err(|e| format!("Помилка HTTP-запиту: {e}"))?;
+    let response = reqwest::blocking::get(url).map_err(|e| format!("HTTP помилка: {e}"))?;
 
-    if !response.status().is_success() {
-        return Err(format!("Сервер повернув статус: {}", response.status()));
-    }
+    let bytes = response.bytes().map_err(|e| format!("Bytes error: {e}"))?;
 
-    let bytes = response
-        .bytes()
-        .map_err(|e| format!("Не вдалося прочитати тіло відповіді: {e}"))?;
-
-    image::load_from_memory(&bytes)
-        .map_err(|e| format!("Не вдалося завантажити зображення з памʼяті: {e}"))
+    image::load_from_memory(&bytes).map_err(|e| format!("Decode error: {e}"))
 }
 
 fn load_image_from_path(path: &str) -> Result<DynamicImage, String> {
-    let path_obj = Path::new(path);
-
-    image::open(path_obj).map_err(|e| {
-        format!(
-            "Не вдалося відкрити зображення за шляхом {}: {e}",
-            path_obj.display()
-        )
-    })
+    image::open(path).map_err(|e| format!("File error: {e}"))
 }
 
 fn resize_image(img: DynamicImage, width: u32, height: u32) -> DynamicImage {
@@ -182,26 +164,24 @@ fn build_output_path(
     height: u32,
     index: usize,
 ) -> PathBuf {
-    let base_name = if is_url(original) {
-        // спробувати взяти імʼя файлу з URL
-        original
-            .rsplit('/')
-            .next()
-            .filter(|s| !s.is_empty())
-            .unwrap_or("image")
+    let base = if is_url(original) {
+        original.split('/').last().unwrap_or("image")
     } else {
         Path::new(original)
             .file_name()
-            .and_then(|n| n.to_str())
+            .and_then(|s| s.to_str())
             .unwrap_or("image")
     };
 
-    // Забрати розширення, якщо є
-    let base_without_ext = base_name
-        .rsplit_once('.')
-        .map(|(name, _)| name)
-        .unwrap_or(base_name);
+    let name = base.split('.').next().unwrap_or("image");
 
-    let file_name = format!("{base_without_ext}_{width}x{height}_{index}.png");
+    // FIX ISSUE #2 — унікальність через timestamp
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+
+    let file_name = format!("{name}_{width}x{height}_{index}_{timestamp}.png");
+
     output_dir.join(file_name)
 }
