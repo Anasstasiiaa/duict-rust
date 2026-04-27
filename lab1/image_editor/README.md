@@ -23,3 +23,31 @@ set MYME_FILES_PATH=output
 
 cargo run -- --files images.txt --resize 200x200
 ```
+
+## Bug Tracking Systems Comparison
+
+### Jira
+
+- Powerful workflows
+- Good for enterprise
+
+* Complex setup
+
+### GitHub Issues
+
+- Free and integrated with Git
+- Easy to use
+
+* Limited advanced workflows
+
+### Linear
+
+- Fast and modern UI
+
+* Paid for teams
+
+### Bugzilla
+
+- Very stable
+
+* Old interface
