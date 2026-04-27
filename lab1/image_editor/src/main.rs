@@ -5,11 +5,12 @@ use std::time::Instant;
 use image::imageops::FilterType;
 use image::DynamicImage;
 
-use rayon::prelude::*;
+use futures::future::join_all;
 use tokio::fs;
 use tokio::runtime::Builder;
 
 /// Config
+#[derive(Clone)]
 struct Config {
     list_path: PathBuf,
     width: u32,
@@ -18,12 +19,10 @@ struct Config {
 }
 
 fn main() {
-    // ⏱ benchmark start
     let start = Instant::now();
 
-    // ⚙️ MANUAL TOKIO RUNTIME CONFIGURATION (ЛР8 requirement)
     let runtime = Builder::new_multi_thread()
-        .worker_threads(num_cpus::get()) // оптимально = CPU cores
+        .worker_threads(num_cpus::get())
         .max_blocking_threads(8)
         .enable_all()
         .build()
@@ -36,7 +35,6 @@ fn main() {
         }
     });
 
-    // ⏱ benchmark end
     println!("Time: {:?}", start.elapsed());
 }
 
@@ -44,23 +42,29 @@ async fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().collect();
     let config = parse_args(&args)?;
 
-    // 📥 ASYNC IO (file read)
+    // async read
     let content = fs::read_to_string(&config.list_path)
         .await
         .map_err(|e| format!("Cannot read file: {e}"))?;
 
     let entries: Vec<String> = content.lines().map(|s| s.to_string()).collect();
 
-    // 🧠 CPU-bound parallel processing
-    entries.par_iter().enumerate().for_each(|(idx, entry)| {
-        if entry.trim().is_empty() {
-            return;
-        }
+    // async tasks
+    let tasks = entries.into_iter().enumerate().map(|(idx, entry)| {
+        let config = config.clone();
 
-        if let Err(err) = process_entry(entry, &config, idx) {
-            eprintln!("Error #{idx} ({entry}): {err}");
-        }
+        tokio::spawn(async move {
+            if entry.trim().is_empty() {
+                return;
+            }
+
+            if let Err(e) = process_entry(entry, config, idx).await {
+                eprintln!("Error #{idx}: {e}");
+            }
+        })
     });
+
+    join_all(tasks).await;
 
     Ok(())
 }
@@ -118,19 +122,37 @@ fn parse_resize(s: &str) -> Result<(u32, u32), String> {
     Ok((width, height))
 }
 
-fn process_entry(entry: &str, config: &Config, index: usize) -> Result<(), String> {
-    let img = load_image_from_path(entry)?;
+async fn process_entry(
+    entry: String,
+    config: Config,
+    index: usize,
+) -> Result<(), String> {
+    let img = load_image_from_path(&entry)?;
 
-    let resized = resize_image(img, config.width, config.height);
+    // CPU-bound → blocking pool
+    let resized = tokio::task::spawn_blocking(move || {
+        resize_image(img, config.width, config.height)
+    })
+    .await
+    .map_err(|_| "CPU task failed")?;
 
-    let output_path =
-        build_output_path(entry, &config.output_dir, config.width, config.height, index);
+    let output_path = build_output_path(
+        &entry,
+        &config.output_dir,
+        config.width,
+        config.height,
+        index,
+    );
 
-    resized
-        .save(&output_path)
-        .map_err(|e| format!("save error: {e}"))?;
+    tokio::task::spawn_blocking(move || {
+        resized.save(&output_path)
+    })
+    .await
+    .map_err(|_| "Save task failed")?
+    .map_err(|e| format!("Save error: {e}"))?;
 
     println!("Saved: {}", output_path.display());
+
     Ok(())
 }
 

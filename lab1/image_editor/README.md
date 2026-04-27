@@ -1,16 +1,26 @@
-## Performance comparison
+# Lab 9 — Async Code Refactoring
 
-Tested different Tokio runtime configurations:
+## Goal
 
-1 thread:
-Time: 157 ms
+Improve async performance and code structure using Tokio and futures.
 
-2 threads:
-Time: 158 ms
+## Changes
 
-CPU cores (4 threads):
-Time: 150 ms
+- Replaced blocking HTTP with async reqwest
+- Removed rayon, replaced with tokio::spawn
+- Used join_all for concurrent execution
+- Moved CPU-bound work into spawn_blocking
 
-Conclusion:
-Best performance achieved when number of threads equals CPU cores.
-Too many threads may reduce performance due to context switching overhead.
+## Architecture
+
+- IO-bound → async/await
+- CPU-bound → blocking thread pool
+- Tasks → tokio::spawn
+
+## Result
+
+Cleaner async pipeline and better scalability.
+
+## Conclusion
+
+Proper separation of IO and CPU tasks improves performance and prevents runtime blocking.
