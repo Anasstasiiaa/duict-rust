@@ -1,21 +1,25 @@
-# Lab 2
+# Lab 3: Error Handling and Documentation
 
-## Topic
+## Description
 
-Dynamic polymorphism
+Refactored image editor project:
 
-## Completed tasks
+- Added structured error handling using `thiserror`
+- Replaced String-based errors with enum
+- Added Rust doc-comments
+- Enabled strict lints
 
-- Created Uploader trait
-- FS uploader
-- S3 uploader
-- Dynamic selection (env)
+## Features
 
-## Usage
+- Strong typed errors
+- Automatic conversions via `From`
+- Generated documentation via cargo doc
 
-MYME_UPLOADER=fs → file system  
-MYME_UPLOADER=s3 → AWS S3
+## Run
 
-## Result
+```bash
+set MYME_UPLOADER=fs
+set MYME_FILES_PATH=output
 
-Dynamic dispatch implemented via Box<dyn Trait>
+cargo run -- --files images.txt --resize 200x200
+```
