@@ -8,3 +8,5 @@ tokio = { version = "1", features = ["full"] }
 rayon = "1.10"
 image = "0.25"
 num_cpus = "1.17.0"
+futures = "0.3.32"
+reqwest = { version = "0.13.3", features = ["json", "stream"] }
