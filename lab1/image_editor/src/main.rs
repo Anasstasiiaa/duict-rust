@@ -24,11 +24,12 @@ use std::env;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use image::imageops::FilterType;
 use image::DynamicImage;
 
-/// Configuration parsed from CLI arguments.
+/// Configuration parsed from CLI arguments and environment.
 struct Config {
     list_path: PathBuf,
     width: u32,
@@ -50,9 +51,9 @@ fn run() -> Result<(), AppError> {
     let args: Vec<String> = env::args().collect();
     let config = parse_args(&args)?;
 
-    let uploader = get_uploader();
+    let file = File::open(&config.list_path)
+        .map_err(|e| format!("Не вдається відкрити файл зі списком: {e}"))?;
 
-    let file = File::open(&config.list_path)?;
     let reader = BufReader::new(file);
 
     for (idx, line) in reader.lines().enumerate() {
@@ -71,26 +72,7 @@ fn run() -> Result<(), AppError> {
     Ok(())
 }
 
-/// Select uploader based on environment variable.
-///
-/// Defaults to filesystem uploader.
-fn get_uploader() -> Box<dyn Uploader> {
-    match env::var("MYME_UPLOADER")
-        .unwrap_or_else(|_| "fs".to_string())
-        .as_str()
-    {
-        "s3" => Box::new(S3Uploader {
-            bucket: env::var("S3_BUCKET").unwrap_or_else(|_| "default-bucket".to_string()),
-        }),
-        _ => Box::new(FsUploader),
-    }
-}
-
-/// Parse CLI arguments.
-///
-/// # Errors
-/// Returns error if arguments are missing or invalid.
-fn parse_args(args: &[String]) -> Result<Config, AppError> {
+fn parse_args(args: &[String]) -> Result<Config, String> {
     let mut list_path: Option<PathBuf> = None;
     let mut resize: Option<(u32, u32)> = None;
 
@@ -111,16 +93,25 @@ fn parse_args(args: &[String]) -> Result<Config, AppError> {
                 }
                 resize = Some(parse_resize(&args[i])?);
             }
-            other => {
-                return Err(AppError::Config(format!("Unknown arg: {other}")));
-            }
+            other => return Err(format!("Невідомий аргумент: {other}")),
         }
         i += 1;
     }
 
-    let list_path = list_path.ok_or_else(|| AppError::Config("Missing --files argument".into()))?;
+    let list_path = list_path.ok_or_else(|| "Не вказано файл зі списком (--files)".to_string())?;
+
     let (width, height) =
-        resize.ok_or_else(|| AppError::Config("Missing --resize argument".into()))?;
+        resize.ok_or_else(|| "Не вказано розмір (--resize widthxheight)".to_string())?;
+
+    // FIX ISSUE #1 — нормальна обробка env без panic
+    let output_dir_str =
+        env::var("MYME_FILES_PATH").map_err(|_| "MYME_FILES_PATH не встановлено".to_string())?;
+
+    let output_dir = PathBuf::from(output_dir_str);
+
+    if !output_dir.exists() {
+        return Err(format!("Каталог не існує: {}", output_dir.display()));
+    }
 
     Ok(Config {
         list_path,
@@ -133,18 +124,15 @@ fn parse_args(args: &[String]) -> Result<Config, AppError> {
 fn parse_resize(s: &str) -> Result<(u32, u32), AppError> {
     let parts: Vec<&str> = s.split('x').collect();
     if parts.len() != 2 {
-        return Err(AppError::Config(
-            "Invalid format, expected widthxheight".into(),
-        ));
+        return Err("Формат --resize: widthxheight".into());
     }
 
-    let width: u32 = parts[0]
-        .parse()
-        .map_err(|_| AppError::Config("Width must be a positive number".into()))?;
+    let width: u32 = parts[0].parse().map_err(|_| "width не число")?;
+    let height: u32 = parts[1].parse().map_err(|_| "height не число")?;
 
-    let height: u32 = parts[1]
-        .parse()
-        .map_err(|_| AppError::Config("Height must be a positive number".into()))?;
+    if width == 0 || height == 0 {
+        return Err("Розмір має бути > 0".into());
+    }
 
     Ok((width, height))
 }
@@ -164,20 +152,17 @@ fn process_entry(
 
     let resized = resize_image(img, config.width, config.height);
 
-    let filename = build_filename(entry, config.width, config.height, index);
-
-    let mut buffer = Vec::new();
+    let output_path = build_output_path(
+        entry,
+        &config.output_dir,
+        config.width,
+        config.height,
+        index,
+    );
 
     resized
-        .write_to(
-            &mut std::io::Cursor::new(&mut buffer),
-            image::ImageFormat::Png,
-        )
-        .map_err(AppError::Image)?;
-
-    uploader.upload(&filename, buffer)?;
-
-    println!("Processed: {filename}");
+        .save(&output_path)
+        .map_err(|e| format!("Помилка збереження: {e}"))?;
 
     Ok(())
 }
@@ -187,20 +172,16 @@ fn is_url(s: &str) -> bool {
     s.starts_with("http://") || s.starts_with("https://")
 }
 
-/// Load image from URL.
-fn load_image_from_url(url: &str) -> Result<DynamicImage, AppError> {
-    let response = reqwest::blocking::get(url).map_err(|e| AppError::Http(e.to_string()))?;
+fn load_image_from_url(url: &str) -> Result<DynamicImage, String> {
+    let response = reqwest::blocking::get(url).map_err(|e| format!("HTTP помилка: {e}"))?;
 
-    let bytes = response
-        .bytes()
-        .map_err(|e| AppError::Http(e.to_string()))?;
+    let bytes = response.bytes().map_err(|e| format!("Bytes error: {e}"))?;
 
-    image::load_from_memory(&bytes).map_err(AppError::Image)
+    image::load_from_memory(&bytes).map_err(|e| format!("Decode error: {e}"))
 }
 
-/// Load image from file path.
-fn load_image_from_path(path: &str) -> Result<DynamicImage, AppError> {
-    image::open(path).map_err(AppError::Image)
+fn load_image_from_path(path: &str) -> Result<DynamicImage, String> {
+    image::open(path).map_err(|e| format!("File error: {e}"))
 }
 
 /// Resize image.
@@ -208,8 +189,13 @@ fn resize_image(img: DynamicImage, width: u32, height: u32) -> DynamicImage {
     img.resize_exact(width, height, FilterType::Lanczos3)
 }
 
-/// Build output filename.
-fn build_filename(original: &str, width: u32, height: u32, index: usize) -> String {
+fn build_output_path(
+    original: &str,
+    output_dir: &Path,
+    width: u32,
+    height: u32,
+    index: usize,
+) -> PathBuf {
     let base = if is_url(original) {
         original.split('/').last().unwrap_or("image")
     } else {
@@ -221,5 +207,13 @@ fn build_filename(original: &str, width: u32, height: u32, index: usize) -> Stri
 
     let name = base.split('.').next().unwrap_or("image");
 
-    format!("{name}_{width}x{height}_{index}.png")
+    // FIX ISSUE #2 — унікальність через timestamp
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+
+    let file_name = format!("{name}_{width}x{height}_{index}_{timestamp}.png");
+
+    output_dir.join(file_name)
 }
