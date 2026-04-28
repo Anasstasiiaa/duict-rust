@@ -1360,10 +1360,9 @@ dependencies = [
 name = "lab_1_image_editor"
 version = "0.1.0"
 dependencies = [
- "aws-config",
- "aws-sdk-s3",
- "thiserror",
- "tokio",
+ "image",
+ "rayon",
+ "reqwest",
 ]
 
 [[package]]

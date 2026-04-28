@@ -1,53 +1,36 @@
-# Lab 3: Error Handling and Documentation
+Lab 5
 
-## Description
+Topic: Parallel execution of CPU-heavy tasks in Rust
+Goal: Learn multithreading and task parallelization
 
-Refactored image editor project:
+Task Description
+The previous image-processing application was improved by moving CPU-bound operations (decode, resize, encode, save) into parallel execution using the Rayon crate to distribute work across multiple threads.
 
-- Added structured error handling using `thiserror`
-- Replaced String-based errors with enum
-- Added Rust doc-comments
-- Enabled strict lints
+Parallel Processing (example)
 
-## Features
+use rayon::prelude::\*;
 
-- Strong typed errors
-- Automatic conversions via `From`
-- Generated documentation via cargo doc
+entries.par_iter().enumerate().for_each(|(idx, entry)| {
+process_entry(entry, &config, idx);
+});
 
-## Run
+Execution Time Measurement (example)
 
-```bash
-set MYME_UPLOADER=fs
-set MYME_FILES_PATH=output
+use std::time::Instant;
 
-cargo run -- --files images.txt --resize 200x200
-```
+let start = Instant::now();
+// ... run processing ...
+println!("Time: {:?}", start.elapsed());
 
-## Bug Tracking Systems Comparison
+Results
 
-### Jira
+Before (single-thread): Time: 5.67s
+After (rayon parallel): Time: 2.47s
 
-- Powerful workflows
-- Good for enterprise
+Result
 
-* Complex setup
+Performance improvement: ~56% faster execution
 
-### GitHub Issues
+Conclusion
 
-- Free and integrated with Git
-- Easy to use
-
-* Limited advanced workflows
-
-### Linear
-
-- Fast and modern UI
-
-* Paid for teams
-
-### Bugzilla
-
-- Very stable
-
-* Old interface
+Parallel processing significantly improves performance for CPU-heavy image operations by utilizing multiple CPU cores more efficiently.
