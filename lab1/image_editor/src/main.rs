@@ -1,3 +1,25 @@
+//! Image editor CLI tool.
+//!
+//! Reads images from file/URL, resizes them and uploads
+//! either to filesystem or S3 depending on configuration.
+
+#![deny(missing_docs)]
+#![deny(missing_crate_level_docs)]
+#![deny(clippy::missing_panics_doc)]
+#![deny(clippy::missing_errors_doc)]
+#![deny(clippy::result_large_err)]
+
+mod errors;
+use errors::AppError;
+
+mod fs_uploader;
+mod s3_uploader;
+mod uploader;
+
+use fs_uploader::FsUploader;
+use s3_uploader::S3Uploader;
+use uploader::Uploader;
+
 use std::env;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -14,7 +36,6 @@ struct Config {
     list_path: PathBuf,
     width: u32,
     height: u32,
-    output_dir: PathBuf,
 }
 
 fn main() {
@@ -101,7 +122,6 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         list_path,
         width,
         height,
-        output_dir,
     })
 }
 
@@ -138,6 +158,7 @@ fn load_image_from_path(path: &str) -> Result<DynamicImage, String> {
     image::open(path).map_err(|e| format!("file error: {e}"))
 }
 
+/// Resize image.
 fn resize_image(img: DynamicImage, width: u32, height: u32) -> DynamicImage {
     img.resize_exact(width, height, FilterType::Lanczos3)
 }

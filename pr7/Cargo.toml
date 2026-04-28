@@ -1,0 +1,10 @@
+[package]
+name = "web-downloader"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.11", features = ["json"] }
+clap = { version = "4", features = ["derive"] }
+num_cpus = "1"
