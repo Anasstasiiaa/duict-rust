@@ -1,3 +1,25 @@
+//! Image editor CLI tool.
+//!
+//! Reads images from file/URL, resizes them and uploads
+//! either to filesystem or S3 depending on configuration.
+
+#![deny(missing_docs)]
+#![deny(missing_crate_level_docs)]
+#![deny(clippy::missing_panics_doc)]
+#![deny(clippy::missing_errors_doc)]
+#![deny(clippy::result_large_err)]
+
+mod errors;
+use errors::AppError;
+
+mod fs_uploader;
+mod s3_uploader;
+mod uploader;
+
+use fs_uploader::FsUploader;
+use s3_uploader::S3Uploader;
+use uploader::Uploader;
+
 use std::env;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -12,7 +34,6 @@ struct Config {
     list_path: PathBuf,
     width: u32,
     height: u32,
-    output_dir: PathBuf,
 }
 
 fn main() {
@@ -22,7 +43,11 @@ fn main() {
     }
 }
 
-fn run() -> Result<(), String> {
+/// Entry point of application.
+///
+/// # Errors
+/// Returns [`AppError`] if any IO, image or configuration error occurs.
+fn run() -> Result<(), AppError> {
     let args: Vec<String> = env::args().collect();
     let config = parse_args(&args)?;
 
@@ -32,15 +57,15 @@ fn run() -> Result<(), String> {
     let reader = BufReader::new(file);
 
     for (idx, line) in reader.lines().enumerate() {
-        let line = line.map_err(|e| format!("Помилка читання рядка {idx}: {e}"))?;
+        let line = line?;
         let trimmed = line.trim();
 
         if trimmed.is_empty() {
             continue;
         }
 
-        if let Err(err) = process_entry(trimmed, &config, idx) {
-            eprintln!("Помилка для запису #{idx} (`{trimmed}`): {err}");
+        if let Err(err) = process_entry(trimmed, &config, idx, uploader.as_ref()) {
+            eprintln!("Error processing #{idx} (`{trimmed}`): {err}");
         }
     }
 
@@ -57,14 +82,14 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
             "--files" => {
                 i += 1;
                 if i >= args.len() {
-                    return Err("Прапор --files потребує шлях до файлу".into());
+                    return Err(AppError::Config("--files requires path".into()));
                 }
                 list_path = Some(PathBuf::from(&args[i]));
             }
             "--resize" => {
                 i += 1;
                 if i >= args.len() {
-                    return Err("Прапор --resize потребує значення widthxheight".into());
+                    return Err(AppError::Config("--resize requires widthxheight".into()));
                 }
                 resize = Some(parse_resize(&args[i])?);
             }
@@ -91,7 +116,6 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         list_path,
         width,
         height,
-        output_dir,
     })
 }
 
@@ -115,7 +139,13 @@ fn parse_resize(s: &str) -> Result<(u32, u32), String> {
     Ok((width, height))
 }
 
-fn process_entry(entry: &str, config: &Config, index: usize) -> Result<(), String> {
+/// Process single image entry.
+fn process_entry(
+    entry: &str,
+    config: &Config,
+    index: usize,
+    uploader: &dyn Uploader,
+) -> Result<(), AppError> {
     let img = if is_url(entry) {
         load_image_from_url(entry)?
     } else {
@@ -136,10 +166,10 @@ fn process_entry(entry: &str, config: &Config, index: usize) -> Result<(), Strin
         .save(&output_path)
         .map_err(|e| format!("Помилка збереження: {e}"))?;
 
-    println!("Збережено: {}", output_path.display());
     Ok(())
 }
 
+/// Check if string is URL.
 fn is_url(s: &str) -> bool {
     s.starts_with("http://") || s.starts_with("https://")
 }
@@ -156,6 +186,7 @@ fn load_image_from_path(path: &str) -> Result<DynamicImage, String> {
     image::open(path).map_err(|e| format!("File error: {e}"))
 }
 
+/// Resize image.
 fn resize_image(img: DynamicImage, width: u32, height: u32) -> DynamicImage {
     img.resize_exact(width, height, FilterType::Lanczos3)
 }
